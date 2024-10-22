@@ -1,0 +1,157 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "omsWorkspaceName": {
+            "type": "String"
+        },
+        "nsg_name": {
+            "type": "String"
+        },
+        "APPTeam": {
+            "type": "String",
+            "defaultValue": "App Team"
+        },
+        "SRETeam": {
+            "type": "String",
+            "defaultValue": "SRE Team"
+        },
+        "SRETeamEmail": {
+            "type": "String",
+            "defaultValue": "SRE Team Email"
+        }
+    },
+    "variables": {
+        "SavedSearchesArray": [
+            {
+                "searchName": "CPU Trend",
+                "query": "Perf \n| where TimeGenerated  > ago(1h) \n| where CounterName == \"% Processor Time\" and InstanceName == \"_Total\" \n| summarize [\"CPU%\"] = avg(CounterValue) by Computer, bin(TimeGenerated, 5m) \n| render timechart",
+                "searchCategory": "Performance",
+                "name": "CPU Trend"
+            },
+            {
+                "searchName": "RAM Trend",
+                "query": "Perf \n| where TimeGenerated  > ago(1h) \n| where ObjectName == \"Memory\" and (CounterName == \"% Used Memory\" or CounterName == \"% Committed Bytes In Use\") \n| summarize [\"AvgUsedMemory%\"] = avg(CounterValue) by Computer, bin(TimeGenerated, 5m) \n| render timechart",
+                "searchCategory": "Performance",
+                "name": "RAM Trend"
+            },
+            {
+                "searchName": "Disk Space Trend",
+                "query": "Perf \n| where TimeGenerated  > ago(1h) \n| where CounterName == \"% Free Space\" and InstanceName ==  \"_Total\" \n| summarize [\"% Free Space\"] = avg(CounterValue) by Computer, bin(TimeGenerated, 5m) \n| render timechart",
+                "searchCategory": "Performance",
+                "name": "Disk Space Trend"
+            },
+            {
+                "searchName": "Disk Queue Length",
+                "query": "Perf \n| where TimeGenerated  > ago(1h) \n| where ObjectName == \"LogicalDisk\" and CounterName == \"Avg. Disk Queue Length\" \n| summarize [\"% Free Space\"] = avg(CounterValue) by Computer , [\"Time\"] = bin(TimeGenerated, 5m) \n| render timechart",
+                "searchCategory": "Performance",
+                "name": "Disk Queue Length"
+            },
+            {
+                "searchName": "Page File Use",
+                "query": "Perf \n| where TimeGenerated  > ago(1h) \n| where ObjectName == \"Memory\" and (CounterName == \"Pages/sec\") \n| summarize [\"Page File Use\"] = avg(CounterValue) by Computer, bin(TimeGenerated, 5m) \n| render timechart",
+                "searchCategory": "Performance",
+                "name": "Page File Use"
+            },
+            {
+                "searchName": "SQL Errors",
+                "query": "Event \n| where TimeGenerated  > ago(24h) \n| where EventLevelName == \"Error\" \n| distinct Computer, RenderedDescription, Source, EventLog, EventID, TimeGenerated \n| where Source contains \"SQL\" \n| sort by TimeGenerated desc",
+                "searchCategory": "Events",
+                "name": "SQL Errors"
+            },
+            {
+                "searchName": "Errors By Computer",
+                "query": "Event \n| where TimeGenerated  > ago(24h) \n| where EventLevelName == \"Error\" \n| distinct Computer, RenderedDescription, Source, EventLog, EventID, TimeGenerated \n| sort by TimeGenerated desc",
+                "searchCategory": "Events",
+                "name": "Errors By Computer"
+            },
+            {
+                "searchName": "IIS Logs",
+                "query": "W3CIISLog \n| where TimeGenerated  > ago(24h) \n| distinct TimeGenerated, Computer, cIP, sIP, scStatus, sPort, sSiteName, csUriStem, scSubStatus, FileUri \n| sort by TimeGenerated desc",
+                "searchCategory": "Events",
+                "name": "IIS Logs"
+            },
+            {
+                "searchName": "IIS Errors",
+                "query": "W3CIISLog \n| where TimeGenerated  >  ago(24h) \n| where toint(scStatus) >= 400 \n| where csUriStem !contains \"/favicon.ico\"  \n| distinct TimeGenerated, Computer, cIP, sIP, scStatus, sPort, sSiteName, csUriStem, scSubStatus, FileUri \n| sort by TimeGenerated desc",
+                "searchCategory": "Events",
+                "name": "IIS Errors"
+            },
+            {
+                "searchName": "Reboots Last 7 Days",
+                "query": "Event \n| where TimeGenerated > ago(7d) \n| where EventID == 1074 \n| distinct TimeGenerated, Computer, RenderedDescription \n| order by TimeGenerated desc, Computer asc ",
+                "searchCategory": "Events",
+                "name": "Reboots Last 7 Days"
+            },
+            {
+                "searchName": "Service Stopped",
+                "query": "Event \n| where EventLog == 'System' and EventID == 7036 and Source == 'Service Control Manager' \n| parse kind=relaxed EventData with * '<Data Name=\"param1\">' Windows_Service_Name '</Data><Data Name=\"param2\">' Windows_Service_State '</Data>' * \n| sort by TimeGenerated desc \n| project Computer, Windows_Service_Name, Windows_Service_State, TimeGenerated \n| where Windows_Service_State == 'stopped' \n| extend AggregatedValue = 1  \n| where Windows_Service_Name contains \"SQL\" or Windows_Service_Name contains \"BizTalk\" or Windows_Service_Name == \"World Wide Web Publishing Service\"",
+                "searchCategory": "Events",
+                "name": "Service Stopped"
+            },
+            {
+                "searchName": "Offline VMs",
+                "query": "Heartbeat \n| summarize LastCall = max(TimeGenerated) by Computer \n| where LastCall < ago(15m)| sort by LastCall asc",
+                "searchCategory": "Agent Health",
+                "name": "Offline VMs"
+            },
+            {
+                "searchName": "VM Status Count",
+                "query": "Heartbeat \n| summarize LastSeen = max(TimeGenerated) by Computer  \n| extend Status = iff(LastSeen < ago(15m),\"Offline\",\"Online\") \n| summarize Count = count() by Status \n| order by Count",
+                "searchCategory": "Agent Health",
+                "name": "VM Status Count"
+            },
+            {
+                "searchName": "Failed Backups",
+                "query": "AzureDiagnostics  \n| where TimeGenerated > ago(24h) \n| where JobOperation_s == \"Backup\" \n| where SchemaVersion_s == \"V2\" \n| where JobStatus_s != \"Completed\" \n| extend serverArr=split(BackupItemUniqueId_s, \";\") \n| project Server=serverArr[4] ,JobStartDateTime_s, JobDurationInSecs_s, JobStatus_s, JobFailureCode_s, DataTransferredInMB_s \n| sort by JobStatus_s ",
+                "searchCategory": "Backup",
+                "name": "Faied Backups"
+            },
+            {
+                "searchName": "SQL Backup Report",
+                "query": "AzureDiagnostics  \n| where TimeGenerated > ago(24h) \n| where JobOperation_s == \"Backup\" \n| where BackupManagementType_s == \"AzureWorkload\"  \n| where SchemaVersion_s == \"V2\" \n| extend serverArr=split(BackupItemUniqueId_s, \";\") \n| project Server=serverArr[4],Instance=serverArr[5],DB=serverArr[6],JobStartDateTime_s, JobDurationInSecs_s, JobStatus_s, JobFailureCode_s, DataTransferredInMB_s \n| sort by JobStartDateTime_s desc ",
+                "searchCategory": "Backup",
+                "name": "SQL Backup Report"
+            },
+            {
+                "searchName": "VM Backup Report",
+                "query": "AzureDiagnostics  \n| where TimeGenerated > ago(24h) \n| where JobOperation_s == \"Backup\" \n| where BackupManagementType_s == \"IaaSVM\"  \n| where SchemaVersion_s == \"V2\" \n| extend serverArr=split(BackupItemUniqueId_s, \";\") \n| project Server=serverArr[4],JobStartDateTime_s, JobDurationInSecs_s, JobStatus_s, JobFailureCode_s, DataTransferredInMB_s \n| sort by JobStartDateTime_s desc ",
+                "searchCategory": "Backup",
+                "name": "VM Backup Report"
+            },
+            {
+                "searchName": "NSG Flow Logs",
+                "query": "[concat('AzureNetworkAnalytics_CL  \n\/\/ change values to meet your needs. FlowDirection is Inbound or Outbound, FlowStatus is Allowed or Denied, NSGList is the name of the NSG \n| where TimeGenerated > ago(24h) \n| where FlowDirection_s == \"I\" \n| where DestPort_d == \"53\"  \n\/\/| where SrcIP_s contains \"10.\" \n| where FlowStatus_s == \"A\" \n\/\/| where DestIP_s contains \"10.\" \n| where NSGList_s contains ', tolower(parameters('nsg_name')), '\n| distinct TimeGenerated, NSGRule_s, SrcIP_s, DestIP_s, DestPort_d, FlowStatus_s, L4Protocol_s, L7Protocol_s, VM1_s, VM2_s, Subnet1_s, Subnet2_s, NSGRuleType_s, FlowType_s, NSGList_s \n| sort by TimeGenerated desc')]",
+                "searchCategory": "Network",
+                "name": "NSG Flow Logs"
+            },
+            {
+                "searchName": "NSG Blocked Traffic",
+                "query": "[concat('AzureNetworkAnalytics_CL  \n| where TimeGenerated > ago(24h) \n| where FlowDirection_s == \"I\" \n| where SrcIP_s contains \"10.\" \n| where FlowStatus_s == \"D\" \n\/\/| where DestIP_s contains \"10.\" \n\/\/| where NSGList_s contains ', tolower(parameters('nsg_name')), '\n| distinct TimeGenerated, NSGRule_s, SrcIP_s, DestIP_s, DestPort_d, FlowStatus_s, L4Protocol_s, L7Protocol_s, VM1_s, VM2_s, Subnet1_s, Subnet2_s, NSGRuleType_s, FlowType_s, NSGList_s \n| sort by TimeGenerated desc')]",
+                "searchCategory": "Network",
+                "name": "NSG Blocked Traffic"
+            }
+        ]
+    },
+    "resources": [
+        {
+            "apiVersion": "2015-03-20",
+            "type": "Microsoft.OperationalInsights/workspaces/savedSearches",
+            "name": "[concat(parameters('omsWorkspaceName'), '/', tolower(variables('SavedSearchesArray')[copyIndex()].searchCategory), '|', toLower(variables('SavedSearchesArray')[copyIndex()].searchName))]",
+            "tags": {
+                "displayName": "SavedSearches"
+            },
+            "copy": {
+                "name": "savedsearchcopy",
+                "count": "[length(variables('SavedSearchesArray'))]"
+            },
+            "properties": {
+                "etag": "*",
+                "query": "[variables('SavedSearchesArray')[copyIndex()].query]",
+                "displayName": "[variables('SavedSearchesArray')[copyIndex()].searchName]",
+                "category": "[variables('SavedSearchesArray')[copyIndex()].searchCategory]"
+            }
+        }
+    ],
+    "outputs": {}
+}
